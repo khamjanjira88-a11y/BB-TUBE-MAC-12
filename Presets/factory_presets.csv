@@ -1,0 +1,8 @@
+Name,Threshold,Ratio,Attack,Release,Knee,TubeDrive,Harmonics,Mix,Makeup,StereoLink
+Default,-10,4,10,100,6,3,35,100,3,100
+Vocal Warm,-18,3,8,180,8,7,45,100,4,100
+Vocal Aggressive,-20,8,3,80,4,9,60,100,5,100
+Bass Warm,-15,4,15,160,6,4,35,100,3,100
+Drum Bus Glue,-12,4,20,120,4,2,20,85,2,100
+Mix Bus Glue,-8,2,30,250,10,1,10,70,1,100
+Master Gentle,-6,1.5,40,300,12,0.5,5,100,0,100

@@ -1,0 +1,5 @@
+BB Tube Compressor source project
+Copyright (c) BB Audio Tools.
+
+This source package is for development/testing. Replace with your final commercial EULA.
+JUCE is licensed separately by its authors; review its terms before distribution.
