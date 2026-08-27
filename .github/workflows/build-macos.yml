@@ -1,0 +1,496 @@
+name: BB Tube Compressor - macOS
+
+on:
+  workflow_dispatch:
+
+  push:
+    branches:
+      - main
+
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bb-tube-compressor-macos-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  BUILD_DIR: MAC_OS/build
+  BUILD_CONFIG: Release
+  CMAKE_OSX_ARCHITECTURES: "arm64;x86_64"
+
+jobs:
+  build-macos:
+    name: Build macOS Universal 2 VST3 + AU + PKG
+    runs-on: macos-14
+    timeout-minutes: 60
+
+    steps:
+
+      # ==========================================================
+      # 1. CHECKOUT
+      # ==========================================================
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      # ==========================================================
+      # 2. SYSTEM INFORMATION
+      # ==========================================================
+      - name: Show build environment
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "===================================="
+          echo "BB Tube Compressor - macOS Build"
+          echo "===================================="
+
+          echo
+          echo "macOS:"
+          sw_vers
+
+          echo
+          echo "Host architecture:"
+          uname -m
+
+          echo
+          echo "Xcode:"
+          xcodebuild -version
+
+          echo
+          echo "CMake:"
+          cmake --version
+
+          echo
+          echo "Git:"
+          git --version
+
+      # ==========================================================
+      # 3. SELECT XCODE
+      # ==========================================================
+      - name: Select Xcode
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          sudo xcode-select \
+            -s /Applications/Xcode.app/Contents/Developer
+
+          echo "Developer directory:"
+          xcode-select -p
+
+          echo
+          xcodebuild -version
+
+      # ==========================================================
+      # 4. VERIFY PROJECT
+      # ==========================================================
+      - name: Verify repository structure
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -f CMakeLists.txt
+          test -d Source
+          test -d MAC_OS
+          test -d MAC_OS/Scripts
+          test -d MAC_OS/Installer
+
+          echo "Repository structure OK."
+
+      # ==========================================================
+      # 5. CLEAN OLD BUILD
+      # ==========================================================
+      - name: Clean build directory
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf "${BUILD_DIR}"
+
+          mkdir -p "${BUILD_DIR}"
+
+          echo "Clean build directory created:"
+          echo "${BUILD_DIR}"
+
+      # ==========================================================
+      # 6. CONFIGURE CMAKE
+      # ==========================================================
+      - name: Configure CMake / Xcode
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cmake \
+            -S . \
+            -B "${BUILD_DIR}" \
+            -G Xcode \
+            -DCMAKE_BUILD_TYPE="${BUILD_CONFIG}" \
+            -DCMAKE_OSX_ARCHITECTURES="${CMAKE_OSX_ARCHITECTURES}" \
+            -DBB_BUILD_VST3=ON \
+            -DBB_BUILD_AU=ON
+
+      # ==========================================================
+      # 7. BUILD
+      # ==========================================================
+      - name: Build Release
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cmake \
+            --build "${BUILD_DIR}" \
+            --config "${BUILD_CONFIG}" \
+            --parallel "$(sysctl -n hw.ncpu)"
+
+      # ==========================================================
+      # 8. FIND VST3
+      # ==========================================================
+      - name: Locate VST3
+        id: find-vst3
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          VST3_PATH="$(
+            find "${BUILD_DIR}" \
+              -type d \
+              -name "BB Tube Compressor.vst3" \
+              -print \
+              -quit
+          )"
+
+          if [[ -z "${VST3_PATH}" ]]; then
+            echo "::error::BB Tube Compressor.vst3 was not found."
+
+            echo
+            echo "Build tree:"
+            find "${BUILD_DIR}" \
+              -maxdepth 8 \
+              -print | head -500
+
+            exit 1
+          fi
+
+          echo "VST3:"
+          echo "${VST3_PATH}"
+
+          echo "path=${VST3_PATH}" >> "${GITHUB_OUTPUT}"
+
+      # ==========================================================
+      # 9. FIND AU
+      # ==========================================================
+      - name: Locate AU
+        id: find-au
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          AU_PATH="$(
+            find "${BUILD_DIR}" \
+              -type d \
+              -name "BB Tube Compressor.component" \
+              -print \
+              -quit
+          )"
+
+          if [[ -z "${AU_PATH}" ]]; then
+            echo "::error::BB Tube Compressor.component was not found."
+
+            echo
+            echo "Build tree:"
+            find "${BUILD_DIR}" \
+              -maxdepth 8 \
+              -print | head -500
+
+            exit 1
+          fi
+
+          echo "AU:"
+          echo "${AU_PATH}"
+
+          echo "path=${AU_PATH}" >> "${GITHUB_OUTPUT}"
+
+      # ==========================================================
+      # 10. VALIDATE VST3
+      # ==========================================================
+      - name: Validate VST3 bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          VST3="${{ steps.find-vst3.outputs.path }}"
+          BIN="${VST3}/Contents/MacOS/BB Tube Compressor"
+
+          test -d "${VST3}"
+          test -f "${VST3}/Contents/Info.plist"
+          test -d "${VST3}/Contents/MacOS"
+          test -f "${BIN}"
+
+          echo "VST3 bundle validated."
+
+          echo
+          echo "Binary:"
+          file "${BIN}"
+
+          echo
+          echo "Architecture:"
+          lipo -info "${BIN}"
+
+      # ==========================================================
+      # 11. VALIDATE UNIVERSAL 2 VST3
+      # ==========================================================
+      - name: Validate VST3 Universal 2
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          VST3="${{ steps.find-vst3.outputs.path }}"
+          BIN="${VST3}/Contents/MacOS/BB Tube Compressor"
+
+          ARCHS="$(lipo -archs "${BIN}")"
+
+          echo "Architectures:"
+          echo "${ARCHS}"
+
+          echo "${ARCHS}" | grep -qw "arm64" || {
+            echo "::error::arm64 architecture is missing."
+            exit 1
+          }
+
+          echo "${ARCHS}" | grep -qw "x86_64" || {
+            echo "::error::x86_64 architecture is missing."
+            exit 1
+          }
+
+          echo "VST3 Universal 2 validation PASSED."
+
+      # ==========================================================
+      # 12. VALIDATE AU
+      # ==========================================================
+      - name: Validate AU bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          AU="${{ steps.find-au.outputs.path }}"
+          BIN="${AU}/Contents/MacOS/BB Tube Compressor"
+
+          test -d "${AU}"
+          test -f "${AU}/Contents/Info.plist"
+          test -d "${AU}/Contents/MacOS"
+          test -f "${BIN}"
+
+          echo "AU bundle validated."
+
+          echo
+          echo "AU architecture:"
+          lipo -info "${BIN}"
+
+      # ==========================================================
+      # 13. VALIDATE AU UNIVERSAL 2
+      # ==========================================================
+      - name: Validate AU Universal 2
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          AU="${{ steps.find-au.outputs.path }}"
+          BIN="${AU}/Contents/MacOS/BB Tube Compressor"
+
+          ARCHS="$(lipo -archs "${BIN}")"
+
+          echo "${ARCHS}" | grep -qw "arm64" || {
+            echo "::error::AU arm64 architecture is missing."
+            exit 1
+          }
+
+          echo "${ARCHS}" | grep -qw "x86_64" || {
+            echo "::error::AU x86_64 architecture is missing."
+            exit 1
+          }
+
+          echo "AU Universal 2 validation PASSED."
+
+      # ==========================================================
+      # 14. INSPECT PLUG-IN METADATA
+      # ==========================================================
+      - name: Inspect plugin metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          VST3="${{ steps.find-vst3.outputs.path }}"
+          AU="${{ steps.find-au.outputs.path }}"
+
+          echo "===================================="
+          echo "VST3 Info.plist"
+          echo "===================================="
+
+          plutil -p \
+            "${VST3}/Contents/Info.plist" \
+            || true
+
+          echo
+          echo "===================================="
+          echo "AU Info.plist"
+          echo "===================================="
+
+          plutil -p \
+            "${AU}/Contents/Info.plist" \
+            || true
+
+      # ==========================================================
+      # 15. CHECK SIGNING STATUS
+      # ==========================================================
+      - name: Check code signing status
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          VST3="${{ steps.find-vst3.outputs.path }}"
+          AU="${{ steps.find-au.outputs.path }}"
+
+          echo "VST3 signature:"
+          codesign \
+            --verify \
+            --deep \
+            --strict \
+            --verbose=2 \
+            "${VST3}" \
+            || true
+
+          echo
+          echo "AU signature:"
+          codesign \
+            --verify \
+            --deep \
+            --strict \
+            --verbose=2 \
+            "${AU}" \
+            || true
+
+      # ==========================================================
+      # 16. BUILD PKG
+      # ==========================================================
+      - name: Build macOS PKG
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          chmod +x MAC_OS/Installer/build_pkg.sh
+
+          MAC_OS/Installer/build_pkg.sh
+
+          PKG="MAC_OS/Installer/BB_Tube_Compressor_macOS.pkg"
+
+          test -f "${PKG}"
+
+          echo
+          echo "PKG created:"
+          ls -lh "${PKG}"
+
+      # ==========================================================
+      # 17. VALIDATE PKG
+      # ==========================================================
+      - name: Validate macOS PKG
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          PKG="MAC_OS/Installer/BB_Tube_Compressor_macOS.pkg"
+
+          echo "PKG payload:"
+          pkgutil \
+            --payload-files \
+            "${PKG}" \
+            | head -200 || true
+
+          echo
+          echo "PKG signature:"
+          pkgutil \
+            --check-signature \
+            "${PKG}" \
+            || true
+
+      # ==========================================================
+      # 18. CREATE PLUGIN ZIP
+      # ==========================================================
+      - name: Create macOS plugin ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          STAGE="${RUNNER_TEMP}/BB_Tube_Compressor_macOS"
+
+          rm -rf "${STAGE}"
+
+          mkdir -p "${STAGE}/VST3"
+          mkdir -p "${STAGE}/AU"
+          mkdir -p "${STAGE}/Presets"
+
+          cp -R \
+            "${{ steps.find-vst3.outputs.path }}" \
+            "${STAGE}/VST3/"
+
+          cp -R \
+            "${{ steps.find-au.outputs.path }}" \
+            "${STAGE}/AU/"
+
+          if [[ -f "Presets/factory_presets.csv" ]]; then
+            cp \
+              "Presets/factory_presets.csv" \
+              "${STAGE}/Presets/"
+          fi
+
+          ditto \
+            -c \
+            -k \
+            --sequesterRsrc \
+            --keepParent \
+            "${STAGE}" \
+            "BB_Tube_Compressor_macOS_Plugins.zip"
+
+          test -f "BB_Tube_Compressor_macOS_Plugins.zip"
+
+      # ==========================================================
+      # 19. UPLOAD ARTIFACTS
+      # ==========================================================
+      - name: Upload macOS artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: BB-Tube-Compressor-macOS-${{ github.sha }}
+          if-no-files-found: error
+          compression-level: 6
+          overwrite: true
+
+          path: |
+            MAC_OS/Installer/BB_Tube_Compressor_macOS.pkg
+            BB_Tube_Compressor_macOS_Plugins.zip
+            Presets/factory_presets.csv
+
+      # ==========================================================
+      # 20. SUMMARY
+      # ==========================================================
+      - name: Build summary
+        shell: bash
+        run: |
+          {
+            echo "## BB Tube Compressor — macOS"
+            echo
+            echo "| Item | Status |"
+            echo "|---|---|"
+            echo "| VST3 | ✅ Built |"
+            echo "| AU | ✅ Built |"
+            echo "| arm64 | ✅ |"
+            echo "| x86_64 | ✅ |"
+            echo "| Universal 2 | ✅ |"
+            echo "| PKG | ✅ Built |"
+            echo "| Signing | Development / unsigned unless configured |"
+          } >> "${GITHUB_STEP_SUMMARY}"
